@@ -68,7 +68,7 @@ OPTION(enable_experimental_unrecoverable_data_corrupting_features, OPT_STR, "")
 OPTION(xio_trace_mempool, OPT_BOOL, false) // mempool allocation counters
 OPTION(xio_trace_msgcnt, OPT_BOOL, false) // incoming/outgoing msg counters
 OPTION(xio_trace_xcon, OPT_BOOL, false) // Xio message encode/decode trace
-OPTION(xio_queue_depth, OPT_INT, 512) // depth of Accelio msg queue
+OPTION(xio_queue_depth, OPT_INT, 128) // depth of Accelio msg queue
 OPTION(xio_mp_min, OPT_INT, 128) // default min mempool size
 OPTION(xio_mp_max_64, OPT_INT, 65536) // max 64-byte chunks (buffer is 40)
 OPTION(xio_mp_max_256, OPT_INT, 8192) // max 256-byte chunks
@@ -77,6 +77,13 @@ OPTION(xio_mp_max_page, OPT_INT, 4096) // max 1K chunks
 OPTION(xio_mp_max_hint, OPT_INT, 4096) // max size-hint chunks
 OPTION(xio_portal_threads, OPT_INT, 2) // xio portal threads per messenger
 OPTION(xio_transport_type, OPT_STR, "rdma") // xio transport type: {rdma or tcp}
+OPTION(xio_max_send_inline, OPT_INT, 512) // xio maximum threshold to send inline
+
+OPTION(async_compressor_enabled, OPT_BOOL, false)
+OPTION(async_compressor_type, OPT_STR, "snappy")
+OPTION(async_compressor_threads, OPT_INT, 2)
+OPTION(async_compressor_thread_timeout, OPT_INT, 5)
+OPTION(async_compressor_thread_suicide_timeout, OPT_INT, 30)
 
 DEFAULT_SUBSYS(0, 5)
 SUBSYS(lockdep, 0, 1)
@@ -122,6 +129,7 @@ SUBSYS(asok, 1, 5)
 SUBSYS(throttle, 1, 1)
 SUBSYS(refs, 0, 0)
 SUBSYS(xio, 1, 5)
+SUBSYS(compressor, 1, 5)
 
 OPTION(key, OPT_STR, "")
 OPTION(keyfile, OPT_STR, "")
@@ -244,6 +252,11 @@ OPTION(mon_health_to_clog_tick_interval, OPT_DOUBLE, 60.0)
 OPTION(mon_data_avail_crit, OPT_INT, 5)
 OPTION(mon_data_avail_warn, OPT_INT, 30)
 OPTION(mon_data_size_warn, OPT_U64, 15*1024*1024*1024) // issue a warning when the monitor's data store goes over 15GB (in bytes)
+OPTION(mon_scrub_interval, OPT_INT, 3600*24) // once a day
+OPTION(mon_scrub_timeout, OPT_INT, 60*5) // let's give it 5 minutes; why not.
+OPTION(mon_scrub_max_keys, OPT_INT, 100) // max number of keys to scrub each time
+OPTION(mon_scrub_inject_crc_mismatch, OPT_DOUBLE, 0.0) // probability of injected crc mismatch [0.0, 1.0]
+OPTION(mon_scrub_inject_missing_keys, OPT_DOUBLE, 0.0) // probability of injected missing keys [0.0, 1.0]
 OPTION(mon_config_key_max_entry_size, OPT_INT, 4096) // max num bytes per config-key entry
 OPTION(mon_sync_timeout, OPT_DOUBLE, 60.0)
 OPTION(mon_sync_max_payload_size, OPT_U32, 1048576) // max size for a sync chunk payload (say, 1MB)
@@ -257,6 +270,9 @@ OPTION(mon_osd_min_down_reports, OPT_INT, 3)     // number of times a down OSD m
 OPTION(mon_osd_force_trim_to, OPT_INT, 0)   // force mon to trim maps to this point, regardless of min_last_epoch_clean (dangerous, use with care)
 OPTION(mon_mds_force_trim_to, OPT_INT, 0)   // force mon to trim mdsmaps to this point (dangerous, use with care)
 
+// monitor debug options
+OPTION(mon_debug_deprecated_as_obsolete, OPT_BOOL, false) // consider deprecated commands as obsolete
+
 // dump transactions
 OPTION(mon_debug_dump_transactions, OPT_BOOL, false)
 OPTION(mon_debug_dump_location, OPT_STR, "/var/log/ceph/$cluster-$name.tdump")
@@ -267,6 +283,10 @@ OPTION(mon_sync_provider_kill_at, OPT_INT, 0)  // kill the sync provider at a sp
 OPTION(mon_sync_requester_kill_at, OPT_INT, 0) // kill the sync requester at a specific point in the work flow
 OPTION(mon_force_quorum_join, OPT_BOOL, false) // force monitor to join quorum even if it has been previously removed from the map
 OPTION(mon_keyvaluedb, OPT_STR, "leveldb")   // type of keyvaluedb backend
+
+// UNSAFE -- TESTING ONLY! Allows addition of a cache tier with preexisting snaps
+OPTION(mon_debug_unsafe_allow_tier_with_nonempty_snaps, OPT_BOOL, false)
+
 OPTION(paxos_stash_full_interval, OPT_INT, 25)   // how often (in commits) to stash a full copy of the PaxosService state
 OPTION(paxos_max_join_drift, OPT_INT, 10) // max paxos iterations before we must first sync the monitor stores
 OPTION(paxos_propose_interval, OPT_DOUBLE, 1.0)  // gather updates for this long before proposing a map update
@@ -467,11 +487,14 @@ OPTION(mds_max_purge_ops, OPT_U32, 8192)
 // Maximum number of concurrent RADOS ops to issue in purging, scaled by PG count
 OPTION(mds_max_purge_ops_per_pg, OPT_FLOAT, 0.5)
 
+OPTION(mds_root_ino_uid, OPT_INT, 0) // The UID of / on new filesystems
+OPTION(mds_root_ino_gid, OPT_INT, 0) // The GID of / on new filesystems
+
 // If true, compact leveldb store on mount
 OPTION(osd_compact_leveldb_on_mount, OPT_BOOL, false)
 
 // Maximum number of backfills to or from a single osd
-OPTION(osd_max_backfills, OPT_U64, 10)
+OPTION(osd_max_backfills, OPT_U64, 1)
 
 // Minimum recovery priority (255 = max, smaller = lower)
 OPTION(osd_min_recovery_priority, OPT_INT, 0)
@@ -618,8 +641,8 @@ OPTION(osd_default_data_pool_replay_window, OPT_INT, 45)
 OPTION(osd_preserve_trimmed_log, OPT_BOOL, false)
 OPTION(osd_auto_mark_unfound_lost, OPT_BOOL, false)
 OPTION(osd_recovery_delay_start, OPT_FLOAT, 0)
-OPTION(osd_recovery_max_active, OPT_INT, 15)
-OPTION(osd_recovery_max_single_start, OPT_INT, 5)
+OPTION(osd_recovery_max_active, OPT_INT, 3)
+OPTION(osd_recovery_max_single_start, OPT_INT, 1)
 OPTION(osd_recovery_max_chunk, OPT_U64, 8<<20)  // max size of push chunk
 OPTION(osd_copyfrom_max_chunk, OPT_U64, 8<<20)   // max size of a COPYFROM chunk
 OPTION(osd_push_per_object_cost, OPT_U64, 1000)  // push cost per object
@@ -722,7 +745,7 @@ OPTION(mon_rocksdb_options, OPT_STR, "")
  * 1..63.
  */
 OPTION(osd_client_op_priority, OPT_U32, 63)
-OPTION(osd_recovery_op_priority, OPT_U32, 10)
+OPTION(osd_recovery_op_priority, OPT_U32, 3)
 
 OPTION(osd_snap_trim_priority, OPT_U32, 5)
 OPTION(osd_snap_trim_cost, OPT_U32, 1<<20) // set default cost equal to 1MB io
@@ -933,6 +956,7 @@ OPTION(nss_db_path, OPT_STR, "") // path to nss db
 
 
 OPTION(rgw_max_chunk_size, OPT_INT, 512 * 1024)
+OPTION(rgw_max_put_size, OPT_U64, 5ULL*1024*1024*1024)
 
 /**
  * override max bucket index shards in zone configuration (if not zero)

@@ -4,6 +4,7 @@
  * Ceph - scalable distributed file system
  *
  * Copyright (C) 2004-2006 Sage Weil <sage@newdream.net>
+ * Copyright (c) 2015 Hewlett-Packard Development Company, L.P.
  *
  * This is free software; you can redistribute it and/or
  * modify it under the terms of the GNU Lesser General Public
@@ -76,6 +77,7 @@ using ceph::crypto::SHA1;
 #include "include/assert.h"
 
 #include "common/config.h"
+#include "common/blkdev.h"
 
 #ifdef WITH_LTTNG
 #include "tracing/objectstore.h"
@@ -637,10 +639,32 @@ bool parse_attrname(char **name)
 
 void FileStore::collect_metadata(map<string,string> *pm)
 {
+  char partition_path[PATH_MAX];
+  char dev_node[PATH_MAX];
+  int rc = 0;
+  
   (*pm)["filestore_backend"] = backend->get_name();
   ostringstream ss;
   ss << "0x" << std::hex << m_fs_type << std::dec;
   (*pm)["filestore_f_type"] = ss.str();
+
+  rc = get_device_by_uuid(get_fsid(), "PARTUUID", partition_path,
+        dev_node);
+
+  switch (rc) {
+    case -EOPNOTSUPP:
+    case -EINVAL:
+      (*pm)["backend_filestore_partition_path"] = "unknown";
+      (*pm)["backend_filestore_dev_node"] = "unknown";
+      break;
+    case -ENODEV:
+      (*pm)["backend_filestore_partition_path"] = string(partition_path);
+      (*pm)["backend_filestore_dev_node"] = "unknown";
+      break;
+    default:
+      (*pm)["backend_filestore_partition_path"] = string(partition_path);
+      (*pm)["backend_filestore_dev_node"] = string(dev_node);
+  }
 }
 
 int FileStore::statfs(struct statfs *buf)
@@ -3331,59 +3355,30 @@ int FileStore::_do_sparse_copy_range(int from, int to, uint64_t srcoff, uint64_t
 {
   dout(20) << __func__ << " " << srcoff << "~" << len << " to " << dstoff << dendl;
   int r = 0;
-  struct fiemap *fiemap = NULL;
-
+  map<uint64_t, uint64_t> exomap;
   // fiemap doesn't allow zero length
   if (len == 0)
     return 0;
 
-  r = backend->do_fiemap(from, srcoff, len, &fiemap);
-  if (r < 0) {
-    derr << "do_fiemap failed:" << srcoff << "~" << len << " = " << r << dendl;
-    return r;
-  }
-
-  // No need to copy
-  if (fiemap->fm_mapped_extents == 0)
-    return r;
-
-  struct fiemap_extent *extent = &fiemap->fm_extents[0];
-
-  /* start where we were asked to start */
-  if (extent->fe_logical < srcoff) {
-    extent->fe_length -= srcoff - extent->fe_logical;
-    extent->fe_logical = srcoff;
+  if (backend->has_seek_data_hole()) {
+    dout(15) << "seek_data/seek_hole " << from << " " << srcoff << "~" << len << dendl;
+    r = _do_seek_hole_data(from, srcoff, len, &exomap);
+  } else if (backend->has_fiemap()) {
+    dout(15) << "fiemap ioctl" << from << " " << srcoff << "~" << len << dendl;
+    r = _do_fiemap(from, srcoff, len, &exomap);
   }
 
   int64_t written = 0;
-  uint64_t i = 0;
-
-  while (i < fiemap->fm_mapped_extents) {
-    struct fiemap_extent *next = extent + 1;
-
-    dout(10) << __func__ << " fm_mapped_extents=" << fiemap->fm_mapped_extents
-             << " fe_logical=" << extent->fe_logical << " fe_length="
-             << extent->fe_length << dendl;
-
-    /* try to merge extents */
-    while ((i < fiemap->fm_mapped_extents - 1) &&
-           (extent->fe_logical + extent->fe_length == next->fe_logical)) {
-        next->fe_length += extent->fe_length;
-        next->fe_logical = extent->fe_logical;
-        extent = next;
-        next = extent + 1;
-        i++;
+  for (map<uint64_t, uint64_t>::iterator miter = exomap.begin(); miter != exomap.end(); ++miter) {
+    uint64_t it_off = miter->first - srcoff + dstoff;
+    r = _do_copy_range(from, to, miter->first, miter->second, it_off, true);
+    if (r < 0) {
+      r = -errno;
+      derr << "FileStore::_do_copy_range: copy error at " << miter->first << "~" << miter->second
+             << " to " << it_off << ", " << cpp_strerror(r) << dendl;
+      break;
     }
-
-    if (extent->fe_logical + extent->fe_length > srcoff + len)
-      extent->fe_length = srcoff + len - extent->fe_logical;
-
-    r = _do_copy_range(from, to, extent->fe_logical, extent->fe_length, extent->fe_logical - srcoff + dstoff, true);
-    if (r < 0)
-      goto out;
-    written += extent->fe_length;
-    i++;
-    extent++;
+    written += miter->second;
   }
 
   if (r >= 0) {
@@ -4048,7 +4043,7 @@ int FileStore::getattr(coll_t cid, const ghobject_t& oid, const char *name, buff
     return -EIO;
   } else {
     tracepoint(objectstore, getattr_exit, r);
-    return r;
+    return r < 0 ? r : 0;
   }
 }
 

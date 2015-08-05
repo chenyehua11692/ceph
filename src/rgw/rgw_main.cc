@@ -214,6 +214,7 @@ protected:
       perfcounter->inc(l_rgw_qlen, -1);
       return req;
     }
+    using ThreadPool::WorkQueue<RGWRequest>::_process;
     void _process(RGWRequest *req) {
       perfcounter->inc(l_rgw_qactive);
       process->handle_request(req);
@@ -1259,8 +1260,6 @@ int main(int argc, const char **argv)
 
   dout(1) << "final shutdown" << dendl;
   g_ceph_context->put();
-
-  ceph::crypto::shutdown();
 
   signal_fd_finalize();
 

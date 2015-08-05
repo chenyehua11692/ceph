@@ -456,7 +456,7 @@ int gen_rand_base64(CephContext *cct, char *dest, int size) /* size should be th
   }
   tmp_dest[ret] = '\0';
   memcpy(dest, tmp_dest, size);
-  dest[size] = '\0';
+  dest[size-1] = '\0';
 
   return 0;
 }
@@ -547,6 +547,26 @@ int gen_rand_alphanumeric_no_underscore(CephContext *cct, char *dest, int size) 
   for (i=0; i<size - 1; i++) {
     int pos = (unsigned)dest[i];
     dest[i] = alphanum_no_underscore_table[pos & 63];
+  }
+  dest[i] = '\0';
+
+  return 0;
+}
+
+static const char alphanum_plain_table[]="ABCDEFGHIJKLMNOPQRSTUVWXYZabcdefghijklmnopqrstuvwxyz0123456789";
+
+int gen_rand_alphanumeric_plain(CephContext *cct, char *dest, int size) /* size should be the required string size + 1 */
+{
+  int ret = get_random_bytes(dest, size);
+  if (ret < 0) {
+    lderr(cct) << "cannot get random bytes: " << cpp_strerror(-ret) << dendl;
+    return ret;
+  }
+
+  int i;
+  for (i=0; i<size - 1; i++) {
+    int pos = (unsigned)dest[i];
+    dest[i] = alphanum_plain_table[pos % (sizeof(alphanum_plain_table) - 1)];
   }
   dest[i] = '\0';
 

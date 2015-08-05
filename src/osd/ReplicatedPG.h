@@ -276,7 +276,7 @@ public:
     Context *on_flush;          ///< callback, may be null
 
     FlushOp()
-      : objecter_tid(0), rval(0),
+      : flushed_version(0), objecter_tid(0), rval(0),
 	blocking(false), removal(false),
 	on_flush(NULL) {}
     ~FlushOp() { assert(!on_flush); }
@@ -382,9 +382,11 @@ public:
   const map<pg_shard_t, pg_missing_t> &get_shard_missing() const {
     return peer_missing;
   }
+  using PGBackend::Listener::get_shard_missing;
   const map<pg_shard_t, pg_info_t> &get_shard_info() const {
     return peer_info;
   }
+  using PGBackend::Listener::get_shard_info;  
   const pg_missing_t &get_local_missing() const {
     return pg_log.get_missing();
   }

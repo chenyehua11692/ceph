@@ -363,6 +363,7 @@ private:
     void _process(OpSequencer *osr, ThreadPool::TPHandle &handle) {
       store->_do_op(osr, handle);
     }
+    using ThreadPool::WorkQueue<OpSequencer>::_process;
     void _process_finish(OpSequencer *osr) {
       store->_finish_op(osr);
     }
@@ -570,6 +571,7 @@ public:
   void do_force_sync();
   void start_sync(Context *onsafe);
   void sync();
+  using JournalingObjectStore::sync;
   void _flush_op_queue();
   void flush();
   void sync_and_flush();
@@ -779,7 +781,7 @@ protected:
     return filestore->current_fn;
   }
   int _copy_range(int from, int to, uint64_t srcoff, uint64_t len, uint64_t dstoff) {
-    if (has_fiemap()) {
+    if (has_fiemap() || has_seek_data_hole()) {
       return filestore->_do_sparse_copy_range(from, to, srcoff, len, dstoff);
     } else {
       return filestore->_do_copy_range(from, to, srcoff, len, dstoff);

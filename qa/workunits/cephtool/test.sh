@@ -243,7 +243,7 @@ function test_tiering()
   # test with dirty objects in the tier pool
   # tier pool currently set to 'writeback'
   rados -p cache put /etc/passwd /etc/passwd
-  ceph tell osd.* flush_pg_stats || true
+  ceph tell osd.\* flush_pg_stats || true
   # 1 dirty object in pool 'cache'
   ceph osd tier cache-mode cache forward
   expect_false ceph osd tier cache-mode cache none
@@ -252,7 +252,7 @@ function test_tiering()
   # remove object from tier pool
   rados -p cache rm /etc/passwd
   rados -p cache cache-flush-evict-all
-  ceph tell osd.* flush_pg_stats || true
+  ceph tell osd.\* flush_pg_stats || true
   # no dirty objects in pool 'cache'
   ceph osd tier cache-mode cache forward
   ceph osd tier cache-mode cache none
@@ -302,10 +302,8 @@ function test_tiering()
   # make sure we can't clobber snapshot state
   ceph osd pool create snap_base 2
   ceph osd pool create snap_cache 2
-  rbd -p snap_cache create foo --size 10
-  rbd -p snap_cache snap create foo --snap snap1
-  rbd -p snap_cache snap rm foo --snap snap1
-  expect_false ceph osd tier add snap_base snap_cache --force-nonempty
+  ceph osd pool mksnap snap_cache snapname
+  expect_false ceph osd tier add snap_base snap_cache
   ceph osd pool delete snap_base snap_base --yes-i-really-really-mean-it
   ceph osd pool delete snap_cache snap_cache --yes-i-really-really-mean-it
 
@@ -371,7 +369,7 @@ function test_tiering()
   rados -p cache4 put foo1 $tmpfile
   rados -p cache4 put foo2 $tmpfile
   rm -f $tmpfile
-  ceph tell osd.* flush_pg_stats || true
+  ceph tell osd.\* flush_pg_stats || true
   ceph df | grep datapool | grep ' 2 '
   ceph osd tier remove-overlay datapool
   ceph osd tier remove datapool cache4
@@ -571,7 +569,8 @@ function test_mon_misc()
   ceph log "$mymsg"
   ceph_watch_wait "$mymsg"
 
-  ceph mon_metadata a
+  ceph mon metadata a
+  ceph node ls
 }
 
 function check_mds_active()
@@ -726,7 +725,11 @@ function test_mon_mds()
   ceph osd pool delete data3 data3 --yes-i-really-really-mean-it
   ceph mds set_max_mds 4
   ceph mds set_max_mds 3
+  ceph mds set_max_mds 256
+  expect_false ceph mds set_max_mds 257
   ceph mds set max_mds 4
+  ceph mds set max_mds 256
+  expect_false ceph mds set max_mds 257
   expect_false ceph mds set max_mds asdf
   expect_false ceph mds set inline_data true
   ceph mds set inline_data true --yes-i-really-mean-it
@@ -875,6 +878,25 @@ function test_mon_mds()
 
   ceph osd pool delete fs_data fs_data --yes-i-really-really-mean-it
   ceph osd pool delete fs_metadata fs_metadata --yes-i-really-really-mean-it
+}
+
+function test_mon_mds_metadata()
+{
+  local nmons=$(ceph tell 'mon.*' version | grep -c 'version')
+  test "$nmons" -gt 0
+
+  ceph mds dump |
+  sed -nEe "s/^([0-9]+):.*'([a-z])' mds\\.([0-9]+)\\..*/\\1 \\2 \\3/p" |
+  while read gid id rank; do
+    ceph mds metadata ${gid} | grep '"hostname":'
+    ceph mds metadata ${id} | grep '"hostname":'
+    ceph mds metadata ${rank} | grep '"hostname":'
+
+    local n=$(ceph tell 'mon.*' mds metadata ${id} | grep -c '"hostname":')
+    test "$n" -eq "$nmons"
+  done
+
+  expect_false ceph mds metadata UNKNOWN
 }
 
 function test_mon_mon()
@@ -1536,7 +1558,7 @@ function test_mon_crushmap_validation()
   touch "${crushtool_path}"
   chmod +x "${crushtool_path}"
   local crushtool_path_old=`ceph-conf --show-config-value crushtool`
-  ceph tell mon.* injectargs --crushtool "${crushtool_path}"
+  ceph tell mon.\* injectargs --crushtool "${crushtool_path}"
 
   printf "%s\n" \
       "#!/bin/sh
@@ -1580,7 +1602,7 @@ function test_mon_crushmap_validation()
   expect_false ceph osd setcrushmap -i $map 2> $TMPFILE
   check_response "Error EINVAL: Failed to parse crushmap: ${crushtool_path}: timed out (${mon_lease} sec)"
 
-  ceph tell mon.* injectargs --crushtool "${crushtool_path_old}"
+  ceph tell mon.\* injectargs --crushtool "${crushtool_path_old}"
 
   rm -f "${crushtool_path}"
 }
@@ -1591,7 +1613,31 @@ function test_mon_ping()
   ceph ping mon.b
   expect_false ceph ping mon.foo
 
-  ceph ping mon.*
+  ceph ping mon.\*
+}
+
+function test_mon_deprecated_commands()
+{
+  # current DEPRECATED commands are:
+  #  ceph compact
+  #  ceph scrub
+  #  ceph sync force
+  #
+  # Testing should be accomplished by setting
+  # 'mon_debug_deprecated_as_obsolete = true' and expecting ENOTSUP for
+  # each one of these commands.
+
+  ceph tell mon.a injectargs '--mon-debug-deprecated-as-obsolete'
+  expect_false ceph tell mon.a compact 2> $TMPFILE
+  check_response "\(EOPNOTSUPP\|ENOTSUP\): command is obsolete"
+
+  expect_false ceph tell mon.a scrub 2> $TMPFILE
+  check_response "\(EOPNOTSUPP\|ENOTSUP\): command is obsolete"
+
+  expect_false ceph tell mon.a sync force 2> $TMPFILE
+  check_response "\(EOPNOTSUPP\|ENOTSUP\): command is obsolete"
+
+  ceph tell mon.a injectargs '--no-mon-debug-deprecated-as-obsolete'
 }
 
 #
@@ -1630,11 +1676,13 @@ MON_TESTS+=" mon_heap_profiler"
 MON_TESTS+=" mon_tell"
 MON_TESTS+=" mon_crushmap_validation"
 MON_TESTS+=" mon_ping"
+MON_TESTS+=" mon_deprecated_commands"
 
 OSD_TESTS+=" osd_bench"
 
 MDS_TESTS+=" mds_tell"
 MDS_TESTS+=" mon_mds"
+MDS_TESTS+=" mon_mds_metadata"
 
 TESTS+=$MON_TESTS
 TESTS+=$OSD_TESTS

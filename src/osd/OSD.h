@@ -1749,6 +1749,7 @@ private:
 	(*i)->put("PeeringWQ");
       }
     }
+    using ThreadPool::BatchWorkQueue<PG>::_process;
     void _process_finish(const list<PG *> &pgs) {
       for (list<PG*>::const_iterator i = pgs.begin();
 	   i != pgs.end();
@@ -2125,6 +2126,9 @@ protected:
       osd->osd_lock.Unlock();
       delete c;
     }
+    void _process(Command *c, ThreadPool::TPHandle &tp) {
+      _process(c);
+    }
     void _clear() {
       while (!osd->command_queue.empty()) {
 	Command *c = osd->command_queue.front();
@@ -2180,6 +2184,7 @@ protected:
       osd->do_recovery(pg, handle);
       pg->put("RecoveryWQ");
     }
+    using ThreadPool::WorkQueue<PG>::_process;
     void _clear() {
       while (!osd->recovery_queue.empty()) {
 	PG *pg = osd->recovery_queue.front();
@@ -2234,6 +2239,7 @@ protected:
       remove_queue.pop_front();
       return item;
     }
+    using ThreadPool::WorkQueueVal<pair<PGRef, DeletingStateRef> >::_process;
     void _process(pair<PGRef, DeletingStateRef>, ThreadPool::TPHandle &);
     void _clear() {
       remove_queue.clear();

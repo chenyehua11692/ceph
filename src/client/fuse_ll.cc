@@ -486,7 +486,7 @@ static void fuse_ll_ioctl(fuse_req_t req, fuse_ino_t ino, int cmd, void *arg, st
       struct ceph_file_layout layout;
       struct ceph_ioctl_layout l;
       Fh *fh = (Fh*)fi->fh;
-      cfuse->client->ll_file_layout(fh->inode, &layout);
+      cfuse->client->ll_file_layout(fh, &layout);
       l.stripe_unit = layout.fl_stripe_unit;
       l.stripe_count = layout.fl_stripe_count;
       l.object_size = layout.fl_object_size;
@@ -594,6 +594,15 @@ static void fuse_ll_releasedir(fuse_req_t req, fuse_ino_t ino,
   dir_result_t *dirp = reinterpret_cast<dir_result_t*>(fi->fh);
   cfuse->client->ll_releasedir(dirp);
   fuse_reply_err(req, 0);
+}
+
+static void fuse_ll_fsyncdir(fuse_req_t req, fuse_ino_t ino, int datasync,
+			     struct fuse_file_info *fi)
+{
+  CephFuse::Handle *cfuse = (CephFuse::Handle *)fuse_req_userdata(req);
+  dir_result_t *dirp = reinterpret_cast<dir_result_t*>(fi->fh);
+  int r = cfuse->client->ll_fsyncdir(dirp);
+  fuse_reply_err(req, -r);
 }
 
 static void fuse_ll_access(fuse_req_t req, fuse_ino_t ino, int mask)
@@ -817,7 +826,7 @@ const static struct fuse_lowlevel_ops fuse_ll_oper = {
  opendir: fuse_ll_opendir,
  readdir: fuse_ll_readdir,
  releasedir: fuse_ll_releasedir,
- fsyncdir: fuse_ll_fsync,
+ fsyncdir: fuse_ll_fsyncdir,
  statfs: fuse_ll_statfs,
  setxattr: fuse_ll_setxattr,
  getxattr: fuse_ll_getxattr,

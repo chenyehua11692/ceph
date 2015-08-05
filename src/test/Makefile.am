@@ -68,6 +68,7 @@ check_SCRIPTS += \
 	test/cephtool-test-osd.sh \
 	test/cephtool-test-mon.sh \
 	test/cephtool-test-mds.sh \
+	test/cephtool-test-rados.sh \
 	unittest_bufferlist.sh \
 	test/encoding/check-generated.sh \
 	test/mon/osd-pool-create.sh \
@@ -414,6 +415,11 @@ unittest_subprocess_SOURCES = test/test_subprocess.cc
 unittest_subprocess_LDADD = $(LIBCOMMON) $(UNITTEST_LDADD)
 unittest_subprocess_CXXFLAGS = $(UNITTEST_CXXFLAGS)
 check_PROGRAMS += unittest_subprocess
+
+unittest_async_compressor_SOURCES = test/common/test_async_compressor.cc
+unittest_async_compressor_CXXFLAGS = $(UNITTEST_CXXFLAGS)
+unittest_async_compressor_LDADD = $(UNITTEST_LDADD) $(CEPH_GLOBAL) $(LIBCOMPRESSOR)
+check_PROGRAMS += unittest_async_compressor
 
 check_SCRIPTS += test/pybind/test_ceph_argparse.py
 check_SCRIPTS += test/pybind/test_ceph_daemon.py

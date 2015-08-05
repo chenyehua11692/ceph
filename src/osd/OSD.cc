@@ -3050,6 +3050,8 @@ void OSD::build_past_intervals_parallel()
       }
       assert(last_map);
 
+      boost::scoped_ptr<IsPGRecoverablePredicate> recoverable(
+        pg->get_is_recoverable_predicate());
       std::stringstream debug;
       bool new_interval = pg_interval_t::check_new_interval(
 	p.primary,
@@ -3062,6 +3064,7 @@ void OSD::build_past_intervals_parallel()
 	pg->info.history.last_epoch_clean,
 	cur_map, last_map,
 	pgid,
+        recoverable.get(),
 	&pg->past_intervals,
 	&debug);
       if (new_interval) {
