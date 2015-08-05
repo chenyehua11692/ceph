@@ -123,6 +123,10 @@ public:
     page_set data;
     size_t data_len;
 
+    // use a thread-local vector for the pages returned by PageSet, so we
+    // can avoid allocations in read/write()
+    static thread_local typename page_set::page_vector tls_pages;
+
     PageSetObject(CephContext *cct)
       : data(cct->_conf->memstore_page_partitions,
              cct->_conf->memstore_pages_per_stripe),
