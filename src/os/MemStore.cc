@@ -170,7 +170,7 @@ int MemStore::_load()
     int r = cbl.read_file(fn.c_str(), &err);
     if (r < 0)
       return r;
-    CollectionRef c(new Collection);
+    CollectionRef c(new Collection(cct));
     bufferlist::iterator p = cbl.begin();
     c->decode(p);
     coll_map[*q] = c;
@@ -329,6 +329,7 @@ int MemStore::read(
   bl.clear();
   return o->read(offset, l, bl);
 }
+
 
 int MemStore::fiemap(coll_t cid, const ghobject_t& oid,
 		     uint64_t offset, size_t len, bufferlist& bl)
@@ -1240,7 +1241,7 @@ int MemStore::_create_collection(coll_t cid)
   ceph::unordered_map<coll_t,CollectionRef>::iterator cp = coll_map.find(cid);
   if (cp != coll_map.end())
     return -EEXIST;
-  coll_map[cid].reset(new Collection);
+  coll_map[cid].reset(new Collection(cct));
   return 0;
 }
 
@@ -1357,6 +1358,7 @@ int MemStore::_split_collection(coll_t cid, uint32_t bits, uint32_t match,
   return 0;
 }
 
+// BufferlistObject
 int MemStore::BufferlistObject::read(uint64_t offset, size_t len,
                                      bufferlist &bl)
 {
@@ -1421,5 +1423,86 @@ int MemStore::BufferlistObject::truncate(uint64_t size)
     bp.zero();
     data.append(bp);
   }
+  return 0;
+}
+
+// PageSetObject
+int MemStore::PageSetObject::read(uint64_t offset, size_t len, bufferlist& bl)
+{
+  const size_t end = offset + len;
+  size_t remaining = len;
+
+  page_set::page_vector pages;
+  data.get_range(offset, len, pages);
+
+  auto p = pages.begin();
+  while (remaining) {
+    // no more pages in range
+    if (p == pages.end() || (*p)->offset >= end) {
+      bl.append_zero(remaining);
+      break;
+    }
+    auto page = *p;
+
+    // fill any holes between pages with zeroes
+    if (page->offset > offset) {
+      const size_t count = min(remaining, page->offset - offset);
+      bl.append_zero(count);
+      remaining -= count;
+      offset = page->offset;
+      if (!remaining)
+        break;
+    }
+
+    // read from page
+    const uint64_t page_offset = offset - page->offset;
+    const size_t count = min(remaining, PageSize - page_offset);
+
+    bl.append(page->data + page_offset, count);
+
+    remaining -= count;
+    offset += count;
+
+    page->put();
+    ++p;
+  }
+  return len;
+}
+
+int MemStore::PageSetObject::write(uint64_t offset, const bufferlist &src)
+{
+  unsigned len = src.length();
+
+  // make sure the page range is allocated
+  page_set::page_vector pages;
+  data.alloc_range(offset, src.length(), pages);
+
+  auto page = pages.begin();
+
+  // XXX: cast away the const because bufferlist doesn't have a const_iterator
+  auto p = const_cast<bufferlist&>(src).begin();
+  while (len > 0) {
+    unsigned page_offset = offset - (*page)->offset;
+    unsigned pageoff = PageSize - page_offset;
+    unsigned count = min(len, pageoff);
+    p.copy(count, (*page)->data + page_offset);
+    offset += count;
+    len -= count;
+    if (count == pageoff)
+      ++page;
+  }
+  return 0;
+}
+
+int MemStore::PageSetObject::clone(const Object *src, uint64_t srcoff,
+                                   size_t len, uint64_t dstoff)
+{
+  return -ENOTSUP; // TODO: implement PageSetObject:clone()
+}
+
+int MemStore::PageSetObject::truncate(uint64_t size)
+{
+  data.free_pages_after(size);
+  data_len = size;
   return 0;
 }

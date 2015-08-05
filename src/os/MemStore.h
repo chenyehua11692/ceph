@@ -18,15 +18,19 @@
 
 #include <boost/intrusive_ptr.hpp>
 
-#include "include/assert.h"
 #include "include/unordered_map.h"
 #include "include/memory.h"
 #include "common/Finisher.h"
 #include "common/RefCountedObj.h"
 #include "common/RWLock.h"
 #include "ObjectStore.h"
+#include "PartitionedPageSet.h"
+#include "include/assert.h"
 
 class MemStore : public ObjectStore {
+private:
+  CephContext *const cct;
+
 public:
   struct Object : public RefCountedObject {
     map<string,bufferptr> xattr;
@@ -112,7 +116,45 @@ public:
     }
   };
 
+  struct PageSetObject : public Object {
+    static const size_t PageSize = 64 << 10;
+    typedef PartitionedPageSet<PageSize> page_set;
+
+    page_set data;
+    size_t data_len;
+
+    PageSetObject(CephContext *cct)
+      : data(cct->_conf->memstore_page_partitions,
+             cct->_conf->memstore_pages_per_stripe),
+        data_len(0)
+    {}
+
+    size_t get_size() const override { return data_len; }
+
+    int read(uint64_t offset, size_t len, bufferlist &bl) override;
+    int write(uint64_t offset, const bufferlist &bl) override;
+    int clone(const Object *src, uint64_t srcoff, size_t len,
+              uint64_t dstoff) override;
+    int truncate(uint64_t offset) override;
+
+    void encode(bufferlist& bl) const override {
+      ENCODE_START(1, 1, bl);
+      ::encode(data_len, bl);
+      data.encode(bl);
+      encode_base(bl);
+      ENCODE_FINISH(bl);
+    }
+    void decode(bufferlist::iterator& p) override {
+      DECODE_START(1, p);
+      ::decode(data_len, p);
+      data.decode(p);
+      decode_base(p);
+      DECODE_FINISH(p);
+    }
+  };
+
   struct Collection : public RefCountedObject {
+    CephContext *cct;
     ceph::unordered_map<ghobject_t, ObjectRef> object_hash;  ///< for lookup
     map<ghobject_t, ObjectRef> object_map;        ///< for iteration
     map<string,bufferptr> xattr;
@@ -174,7 +216,8 @@ public:
       return result;
     }
 
-    Collection() : lock("MemStore::Collection::lock") {}
+    Collection(CephContext *cct)
+      : cct(cct), lock("MemStore::Collection::lock") {}
   };
   typedef Collection::Ref CollectionRef;
 
@@ -237,8 +280,6 @@ private:
 
   void _do_transaction(Transaction& t);
 
-  void _write_into_bl(const bufferlist& src, unsigned offset, bufferlist *dst);
-
   int _touch(coll_t cid, const ghobject_t& oid);
   int _write(coll_t cid, const ghobject_t& oid, uint64_t offset, size_t len,
 	      const bufferlist& bl, uint32_t fadvsie_flags = 0);
@@ -278,6 +319,7 @@ private:
 public:
   MemStore(CephContext *cct, const string& path)
     : ObjectStore(path),
+      cct(cct),
       coll_lock("MemStore::coll_lock"),
       apply_lock("MemStore::apply_lock"),
       finisher(cct),
