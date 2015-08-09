@@ -834,7 +834,6 @@ void ReplicatedPG::do_pg_op(OpRequestRef op)
 	  current,
 	  list_size,
 	  list_size,
-	  snapid,
 	  &sentries,
 	  &next);
 	if (r != 0) {
@@ -992,7 +991,6 @@ void ReplicatedPG::do_pg_op(OpRequestRef op)
 	  current,
 	  list_size,
 	  list_size,
-	  snapid,
 	  &sentries,
 	  &next);
 	if (r != 0) {
@@ -1252,6 +1250,7 @@ void ReplicatedPG::do_request(
 	     << " flushes_in_progress pending "
 	     << "waiting for active on " << op << dendl;
     waiting_for_peered.push_back(op);
+    op->mark_delayed("waiting for peered");
     return;
   }
 
@@ -1263,6 +1262,7 @@ void ReplicatedPG::do_request(
       return;
     } else {
       waiting_for_peered.push_back(op);
+      op->mark_delayed("waiting for peered");
       return;
     }
   }
@@ -1276,6 +1276,7 @@ void ReplicatedPG::do_request(
     if (!is_active()) {
       dout(20) << " peered, not active, waiting for active on " << op << dendl;
       waiting_for_active.push_back(op);
+      op->mark_delayed("waiting for active");
       return;
     }
     if (is_replay()) {
@@ -2213,6 +2214,7 @@ void ReplicatedPG::promote_object(ObjectContextRef obc,
 
   if (op)
     wait_for_blocked_object(obc->obs.oi.soid, op);
+  info.stats.stats.sum.num_promote++;
 }
 
 void ReplicatedPG::execute_ctx(OpContext *ctx)
@@ -3446,6 +3448,9 @@ int ReplicatedPG::do_osd_ops(OpContext *ctx, vector<OSDOp>& ops)
 	     (op.extent.offset + op.extent.length > op.extent.truncate_size) )
 	  size = op.extent.truncate_size;
 
+	if (op.extent.length == 0) //length is zero mean read the whole object
+	  op.extent.length = size;
+
 	if (op.extent.offset >= size) {
 	  op.extent.length = 0;
 	  trimmed_read = true;
@@ -3605,8 +3610,8 @@ int ReplicatedPG::do_osd_ops(OpContext *ctx, vector<OSDOp>& ops)
 
         op.extent.length = total_read;
 
-        ::encode(m, osd_op.outdata);
-        ::encode(data_bl, osd_op.outdata);
+        osd_op.outdata.claim_append(bl);
+        ::encode_destructively(data_bl, osd_op.outdata);
 
 	ctx->delta_stats.num_rd_kb += SHIFT_ROUND_UP(op.extent.length, 10);
 	ctx->delta_stats.num_rd++;
@@ -4029,6 +4034,9 @@ int ReplicatedPG::do_osd_ops(OpContext *ctx, vector<OSDOp>& ops)
 
           resp.clones.push_back(ci);
         }
+	if (result < 0) {
+	  break;
+	}	  
         if (ssc->snapset.head_exists &&
 	    !ctx->obc->obs.oi.is_whiteout()) {
           assert(obs.exists);
@@ -6068,13 +6076,14 @@ int ReplicatedPG::fill_in_copy_get(
   bufferlist& bl = reply_obj.data;
   if (left > 0 && !cursor.data_complete) {
     if (cursor.data_offset < oi.size) {
+      left = MIN(oi.size - cursor.data_offset, (uint64_t)left);
       if (cb) {
 	async_read_started = true;
 	ctx->pending_async_reads.push_back(
 	  make_pair(
 	    boost::make_tuple(cursor.data_offset, left, osd_op.op.flags),
 	    make_pair(&bl, cb)));
-	result = MIN(oi.size - cursor.data_offset, (uint64_t)left);
+        result = left;
 	cb->len = result;
       } else {
 	result = pgbackend->objects_read_sync(
@@ -7052,6 +7061,8 @@ int ReplicatedPG::start_flush(
   fop->objecter_tid = tid;
 
   flush_ops[soid] = fop;
+  info.stats.stats.sum.num_flush++;
+  info.stats.stats.sum.num_flush_kb += SHIFT_ROUND_UP(oi.size, 10);
   return -EINPROGRESS;
 }
 
@@ -9116,8 +9127,7 @@ void PG::MissingLoc::check_recovery_sources(const OSDMapRef osdmap)
   
 
 bool ReplicatedPG::start_recovery_ops(
-  int max, RecoveryCtx *prctx,
-  ThreadPool::TPHandle &handle,
+  int max, ThreadPool::TPHandle &handle,
   int *ops_started)
 {
   int& started = *ops_started;
@@ -9227,7 +9237,6 @@ bool ReplicatedPG::start_recovery_ops(
   }
 
   if (state_test(PG_STATE_RECOVERING)) {
-    state_clear(PG_STATE_RECOVERING);
     if (needs_backfill()) {
       dout(10) << "recovery done, queuing backfill" << dendl;
       queue_peering_event(
@@ -9246,7 +9255,6 @@ bool ReplicatedPG::start_recovery_ops(
             AllReplicasRecovered())));
     }
   } else { // backfilling
-    state_clear(PG_STATE_BACKFILL);
     dout(10) << "recovery done, backfill done" << dendl;
     queue_peering_event(
       CephPeeringEvtRef(
@@ -9303,11 +9311,8 @@ int ReplicatedPG::recover_primary(int max, ThreadPool::TPHandle &handle)
 
     eversion_t need = item.need;
 
-    bool unfound = missing_loc.is_unfound(soid);
-
     dout(10) << "recover_primary "
              << soid << " " << item.need
-	     << (unfound ? " (unfound)":"")
 	     << (missing.is_missing(soid) ? " (missing)":"")
 	     << (missing.is_missing(head) ? " (missing head)":"")
              << (recovering.count(soid) ? " (recovering)":"")
@@ -9383,7 +9388,6 @@ int ReplicatedPG::recover_primary(int max, ThreadPool::TPHandle &handle)
 	    dout(10) << " will pull " << alternate_need << " or " << need
 		     << " from one of " << missing_loc.get_locations(soid)
 		     << dendl;
-	    unfound = false;
 	  }
 	}
 	break;
@@ -9392,8 +9396,6 @@ int ReplicatedPG::recover_primary(int max, ThreadPool::TPHandle &handle)
    
     if (!recovering.count(soid)) {
       if (recovering.count(head)) {
-	++skipped;
-      } else if (unfound) {
 	++skipped;
       } else {
 	int r = recover_missing(
@@ -9725,9 +9727,9 @@ int ReplicatedPG::recover_backfill(
 
     // Count simultaneous scans as a single op and let those complete
     if (sent_scan) {
-        ops++;
-	start_recovery_op(hobject_t::get_max()); // XXX: was pbi.end
-        break;
+      ops++;
+      start_recovery_op(hobject_t::get_max()); // XXX: was pbi.end
+      break;
     }
 
     if (backfill_info.empty() && all_peer_done()) {
@@ -9860,6 +9862,7 @@ int ReplicatedPG::recover_backfill(
        i != add_to_stat.end();
        ++i) {
     ObjectContextRef obc = get_object_context(*i, false);
+    assert(obc);
     pg_stat_t stat;
     add_object_context_to_pg_stat(obc, &stat);
     pending_backfill_updates[*i] = stat;
@@ -10081,7 +10084,7 @@ void ReplicatedPG::scan_range(
 
   vector<hobject_t> ls;
   ls.reserve(max);
-  int r = pgbackend->objects_list_partial(bi->begin, min, max, 0, &ls, &bi->end);
+  int r = pgbackend->objects_list_partial(bi->begin, min, max, &ls, &bi->end);
   assert(r >= 0);
   dout(10) << " got " << ls.size() << " items, next " << bi->end << dendl;
   dout(20) << ls << dendl;
@@ -10616,7 +10619,6 @@ bool ReplicatedPG::agent_work(int start_max, int agent_flush_quota)
   vector<hobject_t> ls;
   hobject_t next;
   int r = pgbackend->objects_list_partial(agent_state->position, ls_min, ls_max,
-					  0 /* no filtering by snapid */,
 					  &ls, &next);
   assert(r >= 0);
   dout(20) << __func__ << " got " << ls.size() << " objects" << dendl;
@@ -10949,6 +10951,8 @@ bool ReplicatedPG::agent_maybe_evict(ObjectContextRef& obc)
   int r = _delete_oid(ctx, true);
   if (obc->obs.oi.is_omap())
     ctx->delta_stats.num_objects_omap--;
+  ctx->delta_stats.num_evict++;
+  ctx->delta_stats.num_evict_kb += SHIFT_ROUND_UP(obc->obs.oi.size, 10);
   assert(r == 0);
   finish_ctx(ctx, pg_log_entry_t::DELETE, false);
   simple_repop_submit(repop);
@@ -10997,6 +11001,17 @@ bool ReplicatedPG::agent_choose_mode(bool restart, OpRequestRef op)
     return requeued;
   }
 
+  TierAgentState::flush_mode_t flush_mode = TierAgentState::FLUSH_MODE_IDLE;
+  TierAgentState::evict_mode_t evict_mode = TierAgentState::EVICT_MODE_IDLE;
+  unsigned evict_effort = 0;
+
+  if (info.stats.stats_invalid) {
+    // idle; stats can't be trusted until we scrub.
+    dout(20) << __func__ << " stats invalid (post-split), idle" << dendl;
+    goto skip_calc;
+  }
+
+  {
   uint64_t divisor = pool.info.get_pg_num_divisor(info.pgid.pgid);
   assert(divisor > 0);
 
@@ -11075,7 +11090,6 @@ bool ReplicatedPG::agent_choose_mode(bool restart, OpRequestRef op)
 	   << dendl;
 
   // flush mode
-  TierAgentState::flush_mode_t flush_mode = TierAgentState::FLUSH_MODE_IDLE;
   uint64_t flush_target = pool.info.cache_target_dirty_ratio_micro;
   uint64_t flush_high_target = pool.info.cache_target_dirty_high_ratio_micro;
   uint64_t flush_slop = (float)flush_target * g_conf->osd_agent_slop;
@@ -11087,18 +11101,13 @@ bool ReplicatedPG::agent_choose_mode(bool restart, OpRequestRef op)
     flush_high_target -= MIN(flush_high_target, flush_slop);
   }
 
-  if (info.stats.stats_invalid) {
-    // idle; stats can't be trusted until we scrub.
-    dout(20) << __func__ << " stats invalid (post-split), idle" << dendl;
-  } else if (dirty_micro > flush_high_target) {
+  if (dirty_micro > flush_high_target) {
     flush_mode = TierAgentState::FLUSH_MODE_HIGH;
   } else if (dirty_micro > flush_target) {
     flush_mode = TierAgentState::FLUSH_MODE_LOW;
   }
 
   // evict mode
-  TierAgentState::evict_mode_t evict_mode = TierAgentState::EVICT_MODE_IDLE;
-  unsigned evict_effort = 0;
   uint64_t evict_target = pool.info.cache_target_full_ratio_micro;
   uint64_t evict_slop = (float)evict_target * g_conf->osd_agent_slop;
   if (restart || agent_state->evict_mode == TierAgentState::EVICT_MODE_IDLE)
@@ -11106,9 +11115,7 @@ bool ReplicatedPG::agent_choose_mode(bool restart, OpRequestRef op)
   else
     evict_target -= MIN(evict_target, evict_slop);
 
-  if (info.stats.stats_invalid) {
-    // idle; stats can't be trusted until we scrub.
-  } else if (full_micro > 1000000) {
+  if (full_micro > 1000000) {
     // evict anything clean
     evict_mode = TierAgentState::EVICT_MODE_FULL;
     evict_effort = 1000000;
@@ -11130,7 +11137,9 @@ bool ReplicatedPG::agent_choose_mode(bool restart, OpRequestRef op)
     assert(evict_effort >= inc && evict_effort <= 1000000);
     dout(30) << __func__ << " evict_effort " << was << " quantized by " << inc << " to " << evict_effort << dendl;
   }
+  }
 
+  skip_calc:
   bool old_idle = agent_state->is_idle();
   if (flush_mode != agent_state->flush_mode) {
     dout(5) << __func__ << " flush_mode "

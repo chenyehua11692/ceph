@@ -1362,13 +1362,13 @@ bool OSDMonitor::preprocess_get_osdmap(MonOpRequestRef op)
   epoch_t last = osdmap.get_epoch();
   int max = g_conf->osd_map_message_max;
   for (epoch_t e = MAX(first, m->get_full_first());
-       e < MIN(last, m->get_full_last()) && max > 0;
+       e <= MIN(last, m->get_full_last()) && max > 0;
        ++e, --max) {
     int r = get_version_full(e, reply->maps[e]);
     assert(r >= 0);
   }
   for (epoch_t e = MAX(first, m->get_inc_first());
-       e < MIN(last, m->get_inc_last()) && max > 0;
+       e <= MIN(last, m->get_inc_last()) && max > 0;
        ++e, --max) {
     int r = get_version(e, reply->incremental_maps[e]);
     assert(r >= 0);
@@ -3129,8 +3129,8 @@ bool OSDMonitor::preprocess_command(MonOpRequestRef op)
         << " pool '" << poolstr << "' (" << pool << ")"
         << " object '" << fullobjname << "' ->"
         << " pg " << pgid << " (" << mpgid << ")"
-        << " -> up (" << up << ", p" << up_p << ") acting ("
-        << acting << ", p" << acting_p << ")";
+        << " -> up (" << pg_vector_string(up) << ", p" << up_p << ") acting ("
+        << pg_vector_string(acting) << ", p" << acting_p << ")";
       rdata.append(ds);
     }
   } else if ((prefix == "osd scrub" ||
@@ -3627,6 +3627,22 @@ bool OSDMonitor::preprocess_command(MonOpRequestRef op)
       if (!f && !rss.str().empty())
         tss << "  client io " << rss.str() << "\n";
 
+      // dump cache tier IO rate for cache pool
+      const pg_pool_t *pool = osdmap.get_pg_pool(poolid);
+      if (pool->is_tier()) {
+        if (f) {
+          f->close_section();
+          f->open_object_section("cache_io_rate");
+        }
+
+        rss.clear();
+        rss.str("");
+
+        pg_map.pool_cache_io_rate_summary(f.get(), &rss, poolid);
+        if (!f && !rss.str().empty())
+          tss << "  cache tier io " << rss.str() << "\n";
+      }
+
       if (f) {
         f->close_section();
         f->close_section();
@@ -3898,8 +3914,8 @@ void OSDMonitor::get_pools_health(
 	detail->push_back(make_pair(HEALTH_WARN, ss.str()));
     }
 
-    float warn_threshold = g_conf->mon_pool_quota_warn_threshold/100;
-    float crit_threshold = g_conf->mon_pool_quota_crit_threshold/100;
+    float warn_threshold = (float)g_conf->mon_pool_quota_warn_threshold/100;
+    float crit_threshold = (float)g_conf->mon_pool_quota_crit_threshold/100;
 
     if (pool.quota_max_objects > 0) {
       stringstream ss;
@@ -4629,7 +4645,7 @@ int OSDMonitor::prepare_command_pool_set(map<string,cmd_vartype> &cmdmap,
        if (err == 0) {
 	 k = erasure_code->get_data_chunk_count();
        } else {
-	 ss << __func__ << " get_erasure_code failed: " << tmp;
+	 ss << __func__ << " get_erasure_code failed: " << tmp.rdbuf();
 	 return err;;
        }
 

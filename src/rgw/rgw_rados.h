@@ -76,7 +76,7 @@ struct RGWOLHInfo {
      ::decode(removed, bl);
      DECODE_FINISH(bl);
   }
-
+  static void generate_test_instances(list<RGWOLHInfo*>& o);
   void dump(Formatter *f) const;
 };
 WRITE_CLASS_ENCODER(RGWOLHInfo)
@@ -788,6 +788,7 @@ struct RGWZoneParams {
   }
   void dump(Formatter *f) const;
   void decode_json(JSONObj *obj);
+  static void generate_test_instances(list<RGWZoneParams*>& o);
 };
 WRITE_CLASS_ENCODER(RGWZoneParams)
 
@@ -833,6 +834,7 @@ struct RGWZone {
   }
   void dump(Formatter *f) const;
   void decode_json(JSONObj *obj);
+  static void generate_test_instances(list<RGWZone*>& o);
 };
 WRITE_CLASS_ENCODER(RGWZone)
 
@@ -852,6 +854,7 @@ struct RGWDefaultRegionInfo {
   }
   void dump(Formatter *f) const;
   void decode_json(JSONObj *obj);
+  //todo: implement ceph-dencoder
 };
 WRITE_CLASS_ENCODER(RGWDefaultRegionInfo)
 
@@ -954,6 +957,7 @@ struct RGWRegion {
 
   void dump(Formatter *f) const;
   void decode_json(JSONObj *obj);
+  static void generate_test_instances(list<RGWRegion*>& o);
 };
 WRITE_CLASS_ENCODER(RGWRegion)
 
@@ -1431,7 +1435,7 @@ public:
         map<string, bufferlist> *attrs;
         struct rgw_err *perr;
 
-        StatParams() : lastmod(NULL), obj_size(NULL), attrs(NULL) {}
+        StatParams() : lastmod(NULL), obj_size(NULL), attrs(NULL), perr(NULL) {}
       } stat_params;
 
       struct ReadParams {
@@ -1535,7 +1539,7 @@ public:
         map<string, bufferlist> *attrs;
         struct rgw_err *perr;
 
-        Params() : lastmod(NULL), read_size(NULL), obj_size(NULL), attrs(NULL) {}
+        Params() : lastmod(NULL), read_size(NULL), obj_size(NULL), attrs(NULL), perr(NULL) {}
       } params;
 
       Read(RGWRados::Object *_source) : source(_source) {}

@@ -618,12 +618,9 @@ class KeyValueStore : public ObjectStore,
   int list_collections(vector<coll_t>& ls);
   bool collection_exists(coll_t c);
   bool collection_empty(coll_t c);
-  int collection_list(coll_t c, vector<ghobject_t>& oid);
-  int collection_list_partial(coll_t c, ghobject_t start,
-                              int min, int max, snapid_t snap,
-                              vector<ghobject_t> *ls, ghobject_t *next);
-  int collection_list_range(coll_t c, ghobject_t start, ghobject_t end,
-                            snapid_t seq, vector<ghobject_t> *ls);
+  int collection_list(coll_t c, ghobject_t start, ghobject_t end,
+		      int max,
+		      vector<ghobject_t> *ls, ghobject_t *next);
   int collection_version_current(coll_t c, uint32_t *version);
 
   // omap (see ObjectStore.h for documentation)
@@ -643,7 +640,7 @@ class KeyValueStore : public ObjectStore,
                                                  const ghobject_t &oid);
 
   int check_get_rc(const coll_t cid, const ghobject_t& oid, int r, bool is_equal_size);
-  void dump_start(const std::string file);
+  void dump_start(const std::string &file);
   void dump_stop();
   void dump_transactions(list<ObjectStore::Transaction*>& ls, uint64_t seq,
                          OpSequencer *osr);

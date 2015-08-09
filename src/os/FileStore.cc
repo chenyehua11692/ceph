@@ -2930,7 +2930,8 @@ int FileStore::read(
     memset(&st, 0, sizeof(struct stat));
     int r = ::fstat(**fd, &st);
     assert(r == 0);
-    len = st.st_size;
+    assert(offset < st.st_size);
+    len = st.st_size - offset;
   }
 
 #ifdef HAVE_POSIX_FADVISE
@@ -3355,59 +3356,30 @@ int FileStore::_do_sparse_copy_range(int from, int to, uint64_t srcoff, uint64_t
 {
   dout(20) << __func__ << " " << srcoff << "~" << len << " to " << dstoff << dendl;
   int r = 0;
-  struct fiemap *fiemap = NULL;
-
+  map<uint64_t, uint64_t> exomap;
   // fiemap doesn't allow zero length
   if (len == 0)
     return 0;
 
-  r = backend->do_fiemap(from, srcoff, len, &fiemap);
-  if (r < 0) {
-    derr << "do_fiemap failed:" << srcoff << "~" << len << " = " << r << dendl;
-    return r;
-  }
-
-  // No need to copy
-  if (fiemap->fm_mapped_extents == 0)
-    return r;
-
-  struct fiemap_extent *extent = &fiemap->fm_extents[0];
-
-  /* start where we were asked to start */
-  if (extent->fe_logical < srcoff) {
-    extent->fe_length -= srcoff - extent->fe_logical;
-    extent->fe_logical = srcoff;
+  if (backend->has_seek_data_hole()) {
+    dout(15) << "seek_data/seek_hole " << from << " " << srcoff << "~" << len << dendl;
+    r = _do_seek_hole_data(from, srcoff, len, &exomap);
+  } else if (backend->has_fiemap()) {
+    dout(15) << "fiemap ioctl" << from << " " << srcoff << "~" << len << dendl;
+    r = _do_fiemap(from, srcoff, len, &exomap);
   }
 
   int64_t written = 0;
-  uint64_t i = 0;
-
-  while (i < fiemap->fm_mapped_extents) {
-    struct fiemap_extent *next = extent + 1;
-
-    dout(10) << __func__ << " fm_mapped_extents=" << fiemap->fm_mapped_extents
-             << " fe_logical=" << extent->fe_logical << " fe_length="
-             << extent->fe_length << dendl;
-
-    /* try to merge extents */
-    while ((i < fiemap->fm_mapped_extents - 1) &&
-           (extent->fe_logical + extent->fe_length == next->fe_logical)) {
-        next->fe_length += extent->fe_length;
-        next->fe_logical = extent->fe_logical;
-        extent = next;
-        next = extent + 1;
-        i++;
+  for (map<uint64_t, uint64_t>::iterator miter = exomap.begin(); miter != exomap.end(); ++miter) {
+    uint64_t it_off = miter->first - srcoff + dstoff;
+    r = _do_copy_range(from, to, miter->first, miter->second, it_off, true);
+    if (r < 0) {
+      r = -errno;
+      derr << "FileStore::_do_copy_range: copy error at " << miter->first << "~" << miter->second
+             << " to " << it_off << ", " << cpp_strerror(r) << dendl;
+      break;
     }
-
-    if (extent->fe_logical + extent->fe_length > srcoff + len)
-      extent->fe_length = srcoff + len - extent->fe_logical;
-
-    r = _do_copy_range(from, to, extent->fe_logical, extent->fe_length, extent->fe_logical - srcoff + dstoff, true);
-    if (r < 0)
-      goto out;
-    written += extent->fe_length;
-    i++;
-    extent++;
+    written += miter->second;
   }
 
   if (r >= 0) {
@@ -3482,6 +3454,8 @@ int FileStore::_do_copy_range(int from, int to, uint64_t srcoff, uint64_t len, u
 	break;
       }
     }
+    close(pipefd[0]);
+    close(pipefd[1]);
   } else
 #endif
   {
@@ -4072,7 +4046,7 @@ int FileStore::getattr(coll_t cid, const ghobject_t& oid, const char *name, buff
     return -EIO;
   } else {
     tracepoint(objectstore, getattr_exit, r);
-    return r;
+    return r < 0 ? r : 0;
   }
 }
 
@@ -4513,7 +4487,7 @@ int FileStore::_collection_remove_recursive(const coll_t &cid,
   vector<ghobject_t> objects;
   ghobject_t max;
   while (!max.is_max()) {
-    r = collection_list_partial(cid, max, 200, 300, 0, &objects, &max);
+    r = collection_list(cid, max, ghobject_t::get_max(), 300, &objects, &max);
     if (r < 0)
       return r;
     for (vector<ghobject_t>::iterator i = objects.begin();
@@ -4660,7 +4634,7 @@ bool FileStore::collection_empty(coll_t c)
 
   vector<ghobject_t> ls;
   collection_list_handle_t handle;
-  r = index->collection_list_partial(ghobject_t(), 1, 1, 0, &ls, NULL);
+  r = index->collection_list_partial(ghobject_t(), ghobject_t::get_max(), 1, &ls, NULL);
   if (r < 0) {
     assert(!m_filestore_fail_eio || r != -EIO);
     return false;
@@ -4669,62 +4643,15 @@ bool FileStore::collection_empty(coll_t c)
   tracepoint(objectstore, collection_empty_exit, ret);
   return ret;
 }
-
-int FileStore::collection_list_range(coll_t c, ghobject_t start, ghobject_t end,
-                                     snapid_t seq, vector<ghobject_t> *ls)
+int FileStore::collection_list(coll_t c, ghobject_t start, ghobject_t end, int max,
+			       vector<ghobject_t> *ls, ghobject_t *next)
 {
-  tracepoint(objectstore, collection_list_range_enter, c.c_str());
-  bool done = false;
-  ghobject_t next = start;
-
-  if (!c.is_temp() && !c.is_meta() && next.hobj.pool < -1) {
-    coll_t temp = c.get_temp();
-    int r = collection_list_range(temp, start, end, seq, ls);
-    if (r < 0)
-      return r;
-    // ... always continue on to non-temp ...
-  }
-
-  while (!done) {
-    vector<ghobject_t> next_objects;
-    int r = collection_list_partial(c, next,
-                                get_ideal_list_min(), get_ideal_list_max(),
-                                seq, &next_objects, &next);
-    if (r < 0)
-      return r;
-
-    ls->insert(ls->end(), next_objects.begin(), next_objects.end());
-
-    // special case for empty collection
-    if (ls->empty()) {
-      break;
-    }
-
-    while (!ls->empty() && ls->back() >= end) {
-      ls->pop_back();
-      done = true;
-    }
-
-    if (next >= end) {
-      done = true;
-    }
-  }
-
-  tracepoint(objectstore, collection_list_range_exit, 0);
-  return 0;
-}
-
-int FileStore::collection_list_partial(coll_t c, ghobject_t start,
-				       int min, int max, snapid_t seq,
-				       vector<ghobject_t> *ls, ghobject_t *next)
-{
-  tracepoint(objectstore, collection_list_partial_enter, c.c_str());
-  dout(10) << "collection_list_partial: " << c << " start " << start << dendl;
-  assert(next);
-
   if (start.is_max())
     return 0;
 
+  ghobject_t temp_next;
+  if (!next)
+    next = &temp_next;
   // figure out the pool id.  we need this in order to generate a
   // meaningful 'next' value.
   int64_t pool = -1;
@@ -4749,7 +4676,6 @@ int FileStore::collection_list_partial(coll_t c, ghobject_t start,
     dout(20) << __func__ << " pool is " << pool << " shard is " << shard
 	     << " pgid " << pgid << dendl;
   }
-
   ghobject_t sep;
   sep.hobj.pool = -1;
   sep.set_shard(shard);
@@ -4757,7 +4683,7 @@ int FileStore::collection_list_partial(coll_t c, ghobject_t start,
     if (start < sep) {
       dout(10) << __func__ << " first checking temp pool" << dendl;
       coll_t temp = c.get_temp();
-      int r = collection_list_partial(temp, start, min, max, seq, ls, next);
+      int r = collection_list(temp, start, end, max, ls, next);
       if (r < 0)
 	return r;
       if (*next != ghobject_t::get_max())
@@ -4778,50 +4704,22 @@ int FileStore::collection_list_partial(coll_t c, ghobject_t start,
   assert(NULL != index.index);
   RWLock::RLocker l((index.index)->access_lock);
 
-  r = index->collection_list_partial(start,
-				     min, max, seq,
-				     ls, next);
+  r = index->collection_list_partial(start, end, max, ls, next);
+
   if (r < 0) {
     assert(!m_filestore_fail_eio || r != -EIO);
     return r;
   }
-  if (ls)
-    dout(20) << "objects: " << *ls << dendl;
+  dout(20) << "objects: " << ls << dendl;
 
   // HashIndex doesn't know the pool when constructing a 'next' value
-  if (!next->is_max()) {
+  if (next && !next->is_max()) {
     next->hobj.pool = pool;
     next->set_shard(shard);
+    dout(20) << "  next " << *next << dendl;
   }
-  dout(20) << "  next " << *next << dendl;
 
-  tracepoint(objectstore, collection_list_partial_exit, 0);
   return 0;
-}
-
-int FileStore::collection_list(coll_t c, vector<ghobject_t>& ls)
-{  
-  tracepoint(objectstore, collection_list_enter, c.c_str());
-
-  if (!c.is_temp() && !c.is_meta()) {
-    coll_t temp = c.get_temp();
-    int r = collection_list(temp, ls);
-    if (r < 0)
-      return r;
-  }
-
-  Index index;
-  int r = get_index(c, &index);
-  if (r < 0)
-    return r;
-
-  assert(NULL != index.index);
-  RWLock::RLocker l((index.index)->access_lock);
-
-  r = index->collection_list(&ls);
-  assert(!m_filestore_fail_eio || r != -EIO);
-  tracepoint(objectstore, collection_list_exit, r);
-  return r;
 }
 
 int FileStore::omap_get(coll_t c, const ghobject_t &hoid,
@@ -5404,10 +5302,10 @@ int FileStore::_split_collection(coll_t cid,
     vector<ghobject_t> objects;
     ghobject_t next;
     while (1) {
-      collection_list_partial(
+      collection_list(
 	cid,
-	next,
-	get_ideal_list_min(), get_ideal_list_max(), 0,
+	next, ghobject_t::get_max(),
+	get_ideal_list_max(),
 	&objects,
 	&next);
       if (objects.empty())
@@ -5423,10 +5321,10 @@ int FileStore::_split_collection(coll_t cid,
     }
     next = ghobject_t();
     while (1) {
-      collection_list_partial(
+      collection_list(
 	dest,
-	next,
-	get_ideal_list_min(), get_ideal_list_max(), 0,
+	next, ghobject_t::get_max(),
+	get_ideal_list_max(),
 	&objects,
 	&next);
       if (objects.empty())

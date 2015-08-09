@@ -2506,10 +2506,9 @@ void OSD::clear_temp_objects()
     ghobject_t next;
     while (1) {
       vector<ghobject_t> objects;
-      store->collection_list_partial(*p, next,
-				     store->get_ideal_list_min(),
-				     store->get_ideal_list_max(),
-				     0, &objects, &next);
+      store->collection_list(*p, next, ghobject_t::get_max(),
+			     store->get_ideal_list_max(),
+			     &objects, &next);
       if (objects.empty())
 	break;
       vector<ghobject_t>::iterator q;
@@ -2547,7 +2546,7 @@ void OSD::recursive_remove_collection(ObjectStore *store, spg_t pgid, coll_t tmp
   SnapMapper mapper(&driver, 0, 0, 0, pgid.shard);
 
   vector<ghobject_t> objects;
-  store->collection_list(tmp, objects);
+  store->collection_list(tmp, ghobject_t(), ghobject_t::get_max(), INT_MAX, &objects, 0);
 
   // delete them.
   unsigned removed = 0;
@@ -4227,12 +4226,11 @@ bool remove_dir(
   ObjectStore::Transaction *t = new ObjectStore::Transaction;
   ghobject_t next;
   handle.reset_tp_timeout();
-  store->collection_list_partial(
+  store->collection_list(
     coll,
     next,
-    store->get_ideal_list_min(),
+    ghobject_t::get_max(),
     store->get_ideal_list_max(),
-    0,
     &olist,
     &next);
   for (vector<ghobject_t>::iterator i = olist.begin();
@@ -5793,11 +5791,12 @@ void OSD::_dispatch(Message *m)
   default:
     {
       OpRequestRef op = op_tracker.create_request<OpRequest, Message*>(m);
-      op->mark_event("waiting_for_osdmap");
       // no map?  starting up?
       if (!osdmap) {
         dout(7) << "no OSDMap, not booted" << dendl;
+	logger->inc(l_osd_waiting_for_map);
         waiting_for_osdmap.push_back(op);
+	op->mark_delayed("no osdmap");
         break;
       }
       
@@ -7805,12 +7804,17 @@ void OSD::do_recovery(PG *pg, ThreadPool::TPHandle &handle)
     dout(20) << "  active was " << recovery_oids[pg->info.pgid] << dendl;
 #endif
     
+    int started;
+    bool more = pg->start_recovery_ops(max, handle, &started);
+    dout(10) << "do_recovery started " << started << "/" << max << " on " << *pg << dendl;
+    // If no recovery op is started, don't bother to manipulate the RecoveryCtx
+    if (!started && (more || !pg->have_unfound())) {
+      pg->unlock();
+      goto out;
+    }
+
     PG::RecoveryCtx rctx = create_context();
     rctx.handle = &handle;
-
-    int started;
-    bool more = pg->start_recovery_ops(max, &rctx, handle, &started);
-    dout(10) << "do_recovery started " << started << "/" << max << " on " << *pg << dendl;
 
     /*
      * if we couldn't start any recovery ops and things are still

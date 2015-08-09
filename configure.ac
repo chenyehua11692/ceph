@@ -10,6 +10,8 @@ AC_PREREQ(2.59)
 
 AC_INIT([ceph], [9.0.2], [ceph-devel@vger.kernel.org])
 
+AX_CXX_COMPILE_STDCXX_11(, mandatory)
+
 # Create release string.  Used with VERSION for RPMs.
 RPM_RELEASE=0
 AC_SUBST(RPM_RELEASE)
@@ -97,9 +99,7 @@ AC_PROG_LIBTOOL
 AC_SUBST(AM_CXXFLAGS)
 AM_CXXFLAGS="${AM_CXXFLAGS}"
 
-
-###### PATCH STARTS HERE ######
-# Find out what to build (default is all of these)
+# Find out what to build (default is most of these)
 
 # rados?
 AC_ARG_WITH([rados],
@@ -130,11 +130,21 @@ AM_CONDITIONAL(WITH_CEPHFS, test "$with_cephfs" = "yes")
 # radosgw?
 # radosgw requires rados
 AC_ARG_WITH([radosgw],
-            [AS_HELP_STRING([--with-radosgw], [build RADOS gateway])],
-            [],
-            [with_radosgw=check])
+	[AS_HELP_STRING([--with-radosgw], [build RADOS gateway])],
+	[],
+	[with_radosgw=check])
 # AM_CONDITIONAL is defined later -- we need to check whether we can enable radosgw if no option is present
 #AS_IF([test "$with_radosgw" = "yes"], [AC_DEFINE([WITH_RADOS, WITH_RADOSGW])])
+
+AC_ARG_WITH([selinux],
+	[AS_HELP_STRING([--with-selinux], [build SELinux policy])],
+	[],
+	[with_selinux=no])
+AM_CONDITIONAL(WITH_SELINUX, test "$with_selinux" = "yes")
+if test "x$with_selinux" = x"yes"; then
+	AC_CHECK_FILE([/usr/share/selinux/devel/policyhelp], [true], [AC_MSG_FAILURE([No SELinux found])])
+	AC_CHECK_FILE([/usr/share/selinux/devel/include/Makefile], [true],  [AC_MSG_FAILURE([No SELinux Makefile found])])
+fi
 
 # radosstriper?
 AC_ARG_WITH([radosstriper],
@@ -191,8 +201,6 @@ AS_IF([test "$enable_server" = "yes" -a \( "$with_osd" = "yes" -o "$with_mon" = 
 # cond-check leveldb, necessary if server, osd or mon enabled
 AS_IF([test "$enable_server" = "yes" -a \( "$with_osd" = "yes" -o "$with_mon" = "yes" \)],
 	[AC_CHECK_LIB([leveldb], [leveldb_open], [true], [AC_MSG_FAILURE([libleveldb not found])], [-lsnappy -lpthread])])
-###### PATCH ENDS HERE ######
-
 
 # Check for yasm
 AC_CHECK_PROG(YASM_CHECK, yasm, yes)
@@ -266,7 +274,11 @@ AX_C_PRETTY_FUNC
 # Checks for libraries.
 ACX_PTHREAD
 
-AC_CHECK_LIB([uuid], [uuid_parse], [true], AC_MSG_FAILURE([libuuid not found]))
+LIBUUID=
+AS_IF([test x"$linux" = x"yes"], [
+  AC_CHECK_LIB([uuid], [uuid_parse],
+	       [AC_SUBST([LIBUUID], ["-luuid"])],
+	       AC_MSG_FAILURE([libuuid not found]))])
 
 #Linux only dependencies
 if test x"$linux" = x"yes"; then
@@ -501,20 +513,11 @@ AC_ARG_WITH([fuse],
             [],
             [with_fuse=yes])
 LIBFUSE=
-AS_IF([test "x$with_fuse" != xno],
-	    [AC_CHECK_LIB([fuse], [fuse_main],
-             [AC_SUBST([LIBFUSE], ["-lfuse"])
-               AC_DEFINE([HAVE_LIBFUSE], [1],
-                         [Define if you have fuse])
-               HAVE_LIBFUSE=1
-	       # look for fuse_getgroups and define FUSE_GETGROUPS if found
-           LIBS_saved="$LIBS"
-           LIBS="$LIBS -lfuse"
-	       AC_CHECK_FUNCS([fuse_getgroups])
-           LIBS="$LIBS_saved"
-              ],
-             [AC_MSG_FAILURE(
-                   [no FUSE found (use --without-fuse to disable)])])])
+AS_IF([test "x$with_fuse" != xno], [
+  PKG_CHECK_MODULES([LIBFUSE], [fuse],
+    [HAVE_LIBFUSE=1],
+    [AC_MSG_FAILURE([no FUSE found (use --without-fuse to disable)])])
+])
 AM_CONDITIONAL(WITH_FUSE, [test "$HAVE_LIBFUSE" = "1"])
 
 # jemalloc?
@@ -812,24 +815,6 @@ if test "x$with_jemalloc" = "xyes"; then
 			        --with-librocksdb-static or --with-jemalloc])
 	fi
 fi
-
-# use system libs3?
-AC_ARG_WITH([system-libs3],
-	[AS_HELP_STRING([--with-system-libs3], [use system libs3])],
-	,
-	[with_system_libs3=no])
-AS_IF([test "x$with_system_libs3" = xyes],
-            [AC_CHECK_LIB([s3], [S3_initialize], [true], [AC_MSG_FAILURE([libs3 not found])], [-lpthread])])
-AS_IF([test "x$with_system_libs3" = xcheck],
-            [AC_SEARCH_LIBS([S3_initialize], [s3], [with_system_libs3=yes], [true], [-lpthread])])
-AM_CONDITIONAL(WITH_SYSTEM_LIBS3, [ test "$with_system_libs3" = "yes" ])
-
-# rest-bench?
-AC_ARG_WITH([rest-bench],
-	    [AS_HELP_STRING([--with-rest-bench], [enables rest-bench])],
-	    [],
-	    [with_rest_bench=no])
-AM_CONDITIONAL(WITH_REST_BENCH, [ test "$with_rest_bench" = "yes" ])
 
 # needs libcurl and libxml2
 if test "x$with_rest_bench" = xyes && test "x$with_system_libs3" = xno; then
@@ -1215,6 +1200,76 @@ AC_ARG_WITH(
     ]
 )
 
+
+dnl rgw-user
+AC_SUBST(user_rgw)
+AC_ARG_WITH(
+    rgw-user,
+    AS_HELP_STRING(
+        [--with-rgw-user=USER],
+        [systemd unit directory @<:@USER_RGW@:>@
+        Defaults to "www-data"]
+    ),
+    [
+        user_rgw="$withval"
+    ],
+    [
+        if test "x$USER_RGW" = "x"; then
+            user_rgw=www-data
+        else
+            user_rgw="$USER_RGW"
+        fi
+    ]
+)
+
+dnl rgw-group
+AC_SUBST(group_rgw)
+AC_ARG_WITH(
+    rgw-group,
+    AS_HELP_STRING(
+        [--with-rgw-group=GROUP],
+        [systemd unit directory @<:@GROUP_RGW@:>@
+        Defaults to "www-data"]
+    ),
+    [
+        group_rgw="$withval"
+    ],
+    [
+        if test "x$GROUP_RGW" = "x"; then
+            group_rgw=www-data
+        else
+            group_rgw="$GROUP_RGW"
+        fi
+    ]
+)
+
+
+AC_SUBST(systemd_unit_dir)
+AC_ARG_WITH(
+    systemd-unit-dir,
+    AS_HELP_STRING(
+	    [--with-systemdsystemunitdir=DIR],
+	    [systemd unit directory @<:@SYSTEMD_UNIT_DIR@:>@
+        Defaults to the correct value for debian /etc/systemd/system/]
+    ),
+    [
+	    systemd_unit_dir="$withval"
+    ],
+    [
+        # default to the systemd admin unit directory
+        which pkg-config
+        pkg_config_exists=$?
+        if test x"$pkg_config_exists" = x"0"; then
+            systemd_unit_dir=`pkg-config systemd --variable=systemdsystemunitdir`
+        else
+            systemd_unit_dir="/etc/systemd/system/"
+        fi
+    ]
+)
+
+
+
+
 # Checks for typedefs, structures, and compiler characteristics.
 #AC_HEADER_STDBOOL
 #AC_C_CONST
@@ -1275,8 +1330,11 @@ AC_CONFIG_FILES([Makefile
 	src/ocf/rbd
 	src/java/Makefile
 	src/tracing/Makefile
+	systemd/Makefile
 	man/Makefile
 	doc/Makefile
+	selinux/Makefile
 	systemd/ceph-osd@.service
+	systemd/ceph-rgw.tmpfiles.d
 	ceph.spec])
 AC_OUTPUT

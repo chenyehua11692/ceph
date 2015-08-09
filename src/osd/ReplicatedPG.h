@@ -254,7 +254,7 @@ public:
     Context *on_flush;          ///< callback, may be null
 
     FlushOp()
-      : objecter_tid(0), rval(0),
+      : flushed_version(0), objecter_tid(0), rval(0),
 	blocking(false), removal(false),
 	on_flush(NULL) {}
     ~FlushOp() { assert(!on_flush); }
@@ -1201,8 +1201,7 @@ protected:
 
   void queue_for_recovery();
   bool start_recovery_ops(
-    int max, RecoveryCtx *prctx,
-    ThreadPool::TPHandle &handle, int *started);
+    int max, ThreadPool::TPHandle &handle, int *started);
 
   int recover_primary(int max, ThreadPool::TPHandle &handle);
   int recover_replicas(int max, ThreadPool::TPHandle &handle);

@@ -74,7 +74,7 @@ extern int rgw_store_user_attrs(RGWRados *store,
                                 RGWObjVersionTracker *objv_tracker);
 
 /**
- * Given an email, finds the user info associated with it.
+ * Given an user_id, finds the user info associated with it.
  * returns: 0 on success, -ERR# on failure (including nonexistence)
  */
 extern int rgw_get_user_info_by_uid(RGWRados *store,
@@ -85,7 +85,7 @@ extern int rgw_get_user_info_by_uid(RGWRados *store,
                                     rgw_cache_entry_info *cache_info   = NULL,
                                     map<string, bufferlist> *pattrs    = NULL);
 /**
- * Given an swift username, finds the user info associated with it.
+ * Given an email, finds the user info associated with it.
  * returns: 0 on success, -ERR# on failure (including nonexistence)
  */
 extern int rgw_get_user_info_by_email(RGWRados *store, string& email, RGWUserInfo& info,
@@ -440,7 +440,7 @@ struct RGWUserAdminOpState {
   {
     max_buckets = RGW_DEFAULT_MAX_BUCKETS;
     key_type = -1;
-    perm_mask = 0;
+    perm_mask = RGW_PERM_NONE;
     suspended = 0;
     system = 0;
     exclusive = 0;
