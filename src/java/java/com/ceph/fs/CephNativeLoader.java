@@ -20,16 +20,55 @@
 package com.ceph.fs;
 
 class CephNativeLoader {
+  private static final CephNativeLoader instance = new CephNativeLoader();
+  private static boolean initialized = false;
 
-  private static boolean loaded = false;
+  private static final String JNI_PATH_ENV_VAR = "CEPH_JNI_PATH";
+  private static final String LIBRARY_NAME = "cephfs_jni";
+  private static final String LIBRARY_FILE = "libcephfs_jni.so";
 
-  static {
-    if (!loaded) {
-      System.loadLibrary("cephfs_jni");
-      CephMount.native_initialize();
-      loaded = true;
-    }
+  private CephNativeLoader() {}
+
+  public static CephNativeLoader getInstance() {
+    return instance;
   }
 
-  static void checkLoaded() { assert(loaded); }
+  public synchronized void loadLibrary() {
+    if (initialized)
+      return;
+
+    // force path through environment variable
+    String path = System.getenv(JNI_PATH_ENV_VAR);
+    if (path != null) {
+      System.load(path);
+      CephMount.native_initialize();
+      initialized = true;
+      return;
+    }
+
+    // common for Ubuntu
+    path = "/usr/lib/jni/" + LIBRARY_FILE;
+    try {
+      System.load(path);
+      CephMount.native_initialize();
+      initialized = true;
+      return;
+    } catch (final UnsatisfiedLinkError ule) {
+    }
+
+    // common for RHEL/CentOS
+    path = "/usr/lib64/" + LIBRARY_FILE;
+    try {
+      System.load(path);
+      CephMount.native_initialize();
+      initialized = true;
+      return;
+    } catch (final UnsatisfiedLinkError ule) {
+    }
+
+    // default search path
+    System.loadLibrary(LIBRARY_NAME);
+    CephMount.native_initialize();
+    initialized = true;
+  }
 }
