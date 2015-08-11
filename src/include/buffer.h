@@ -172,6 +172,7 @@ public:
   private:
     raw *_raw;
     unsigned _off, _len;
+    bool embed;
 
   public:
     boost::intrusive::list_member_hook<> _list_item;
@@ -180,7 +181,7 @@ public:
     void release();
 
   public:
-    ptr() : _raw(0), _off(0), _len(0) {}
+    ptr() : _raw(0), _off(0), _len(0), embed(false) {}
     ptr(raw *r);
     ptr(unsigned l);
     ptr(const char *d, unsigned l);
@@ -189,6 +190,13 @@ public:
     ptr& operator= (const ptr& p);
     ~ptr() {
       release();
+    }
+
+    void unlinked_from_list() {
+      if (!embed)
+	delete this;
+      else
+	release();
     }
 
     bool have_raw() const { return _raw ? true:false; }
@@ -408,7 +416,7 @@ public:
       while (!_ptrs.empty()) {
 	ptr *p = &_ptrs.front();
 	_ptrs.pop_front();
-	delete p;
+	p->unlinked_from_list();
       }
       _len = 0;
       _memcopy_count = 0;
