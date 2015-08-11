@@ -173,6 +173,7 @@ public:
     raw *_raw;
     unsigned _off, _len;
     bool embed;
+    friend class raw;
 
   public:
     boost::intrusive::list_member_hook<> _list_item;
@@ -426,18 +427,22 @@ public:
       last_p = begin();
     }
 
+  private:
+    ptr *_get_raw_ptr(raw *r, unsigned off, unsigned len);
+
+  public:
     void push_front(ptr& bp) {
       if (bp.length() == 0)
 	return;
       push_front(bp.get_raw(), bp.offset(), bp.length());
     }
     void push_front(raw *r) {
-      ptr *p = new ptr(r);
+      ptr *p = _get_raw_ptr(r, 0, 0);
       _ptrs.push_front(*p);
       _len += p->length();
     }
     void push_front(raw *r, unsigned off, unsigned len) {
-      ptr *p = new ptr(r, off, len);
+      ptr *p = _get_raw_ptr(r, off, len);
       _ptrs.push_front(*p);
       _len += p->length();
     }
@@ -448,12 +453,12 @@ public:
       push_back(bp.get_raw(), bp.offset(), bp.length());
     }
     void push_back(raw *r) {
-      ptr *p = new ptr(r);
+      ptr *p = _get_raw_ptr(r, 0, 0);
       _ptrs.push_back(*p);
       _len += p->length();
     }
     void push_back(raw *r, unsigned off, unsigned len) {
-      ptr *p = new ptr(r, off, len);
+      ptr *p = _get_raw_ptr(r, off, len);
       _ptrs.push_back(*p);
       _len += p->length();
     }
